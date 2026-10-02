@@ -1,67 +1,79 @@
 # materialy.stemlab.sk
 
-Verejný prehliadač žiackych materiálov. Súbory sú v súkromnom **Cloudflare R2** buckete
-`stemlab-materialy` a malý **Cloudflare Worker** ich zobrazuje ako zložky a súbory.
+Verejný prehliadač žiackych materiálov. Beží priamo na Raspberry Pi v nginx a von ho
+sprístupňuje existujúci Cloudflare tunel.
 
-- **Žiaci** iba čítajú a sťahujú. Worker nemá žiadnu cestu na zápis a nič sa nedá nahrať ani zmazať.
-- **Nahrávate iba vy**, a to cez `rclone` (skript `scripts/nahraj.sh`) alebo cez Cloudflare dashboard.
-- Súbory a zložky začínajúce bodkou (`.nieco`) sú skryté.
-- Raspberry Pi a tunel pre `stemlab.sk` zostávajú bez zmeny, toto beží celé na Cloudflare.
+```
+žiak → materialy.stemlab.sk → Cloudflare tunel → nginx na Pi (127.0.0.1:8080) → /home/admin/materialy
+```
 
-Free tier stačí s rezervou: R2 má 10 GB úložiska zadarmo a sťahovanie bez poplatkov, Workers 100 000 požiadaviek denne.
+![Náhľad](nahlad.png)
 
-## 1. Jednorazové nastavenie
+- **Pridať materiál = skopírovať súbor do `/home/admin/materialy`.** Na webe je hneď.
+  Podzložky sa zobrazia ako zložky.
+- **Žiaci iba čítajú.** Server prijíma len GET/HEAD a nič sa nedá nahrať ani zmazať.
+- Súbory a zložky začínajúce bodkou (`.poznamky`, `.koncepty/`) sú skryté.
+- nginx počúva iba na `127.0.0.1`, takže sa k nemu dostane len tunel.
 
-1. **Bucket:** Cloudflare dashboard → R2 → *Create bucket* → názov `stemlab-materialy`.
-   Verejný prístup (*Public access*) **nezapínajte**, súbory sprístupňuje Worker.
-2. **Deploy Workera** (z počítača alebo Raspberry Pi, potrebný je Node.js 20+):
-   ```bash
-   cd materialy
-   npm install
-   npx wrangler login
-   npx wrangler deploy
-   ```
-   Deploy sám vytvorí DNS záznam a certifikát pre `materialy.stemlab.sk`.
-   > Ak máte v tuneli wildcard `*.stemlab.sk` alebo už existuje DNS záznam `materialy`,
-   > najprv ho v DNS zmažte, inak deploy skončí chybou.
-3. **API kľúč na nahrávanie:** R2 → *Manage R2 API Tokens* → *Create API token*.
-   Oprávnenie *Object Read & Write*, obmedziť len na bucket `stemlab-materialy`.
-   Poznačte si *Access Key ID*, *Secret Access Key* a *Account ID*.
-4. **rclone** (`sudo apt install rclone` alebo <https://rclone.org/downloads/>).
-   Do `~/.config/rclone/rclone.conf` pridajte:
-   ```ini
-   [r2]
-   type = s3
-   provider = Cloudflare
-   access_key_id = VAS_ACCESS_KEY_ID
-   secret_access_key = VAS_SECRET_ACCESS_KEY
-   endpoint = https://VAS_ACCOUNT_ID.r2.cloudflarestorage.com
-   no_check_bucket = true
-   ```
+## Inštalácia (jednorazovo)
 
-## 2. Presun materiálov z MEGA
-
-1. Otvorte zložku na mega.nz → *Stiahnuť* → *Stiahnuť ako ZIP* a rozbaľte ju napr. do `~/Materialy`.
-   (Na Raspberry Pi to ide aj bez prehliadača: `sudo apt install megatools` a potom
-   `megadl --path ~/Materialy 'https://mega.nz/folder/...'`.)
-2. Skontrolujte, čo sa nahrá, a potom nahrajte:
-   ```bash
-   ./scripts/nahraj.sh ~/Materialy           # len náhľad
-   ./scripts/nahraj.sh ~/Materialy --naozaj  # nahranie
-   ```
-
-## 3. Bežné používanie
-
-Upravte súbory v `~/Materialy` (pridať, premenovať, zmazať) a spustite
-`./scripts/nahraj.sh ~/Materialy --naozaj`. Web sa zmení do minúty.
-
-`sync` zrkadlí priečinok: čo zmažete lokálne, zmizne aj z webu.
-
-Jednotlivý súbor sa dá nahrať aj cez dashboard (R2 → bucket → *Upload*, max. 300 MB na súbor).
-Zložku tam vytvoríte cez *Add directory*.
-
-## Lokálne testovanie
+Na Raspberry Pi:
 
 ```bash
-npx wrangler dev      # http://localhost:8787 nad lokálnym (prázdnym) bucketom
+git clone https://github.com/mirecky/stemlab_web.git
+cd stemlab_web/materialy
+sudo ./install.sh                  # zložka /home/admin/materialy
+# alebo: sudo ./install.sh /ina/cesta
+curl -I http://127.0.0.1:8080/     # má vrátiť 200 OK
 ```
+
+Skript:
+- nakopíruje stránku prehliadača do `/var/www/materialy-ui`,
+- pridá nginx stránku `/etc/nginx/sites-available/materialy` a zapne ju,
+- nastaví práva, aby nginx (`www-data`) mohol zložku čítať. Na domovskej zložke pridá iba
+  právo prechodu (`o+x`), takže ostatné súbory v `/home/admin` zostanú nečitateľné,
+- skontroluje konfiguráciu (`nginx -t`) a načíta ju znova. Hlavný web stemlab.sk sa nemení.
+
+Potom v **Cloudflare dashboarde**:
+**Zero Trust → Networks → Tunnels →** váš tunel **→ Edit → Public Hostname → Add a public hostname**
+
+| Pole | Hodnota |
+|---|---|
+| Subdomain | `materialy` |
+| Domain | `stemlab.sk` |
+| Service type | `HTTP` |
+| URL | `localhost:8080` |
+
+Uložte. Cloudflare sám vytvorí DNS záznam a o chvíľu funguje `https://materialy.stemlab.sk`.
+
+> Ak `cloudflared` beží v Dockeri, `localhost` neukazuje na Pi. Vtedy zadajte IP adresu Pi
+> a v `/etc/nginx/sites-available/materialy` zmeňte `listen 127.0.0.1:8080` na `listen 8080`.
+
+## Presun materiálov z MEGA
+
+Na Pi:
+
+```bash
+sudo apt install megatools
+megadl --path /home/admin/materialy 'https://mega.nz/folder/...'
+chmod -R o+rX /home/admin/materialy
+```
+
+Alebo zložku stiahnite na mega.nz ako ZIP a rozbaľte ju do `/home/admin/materialy`.
+
+## Ako nahrávať nové materiály
+
+Ľubovoľným spôsobom, ktorým sa dostanete na disk Pi:
+- `scp subor.pdf admin@raspberrypi:materialy/Elektronika/`
+- cez SFTP (WinSCP, FileZilla, Cyberduck) priamo do `materialy`
+- zo sieťového disku (Samba), ak ho máte nastavený
+
+Ak nginx nejaký súbor nezobrazí (chyba 403), chýbajú mu práva na čítanie:
+`chmod -R o+rX /home/admin/materialy`.
+
+## Súbory
+
+- `nginx/materialy.conf`: nginx server blok. Cesty doplní `install.sh`.
+- `www/index.html`: stránka prehliadača. Obsah zložky si načíta z `/_zoznam/…`
+  (nginx `autoindex` v JSON formáte).
+- `install.sh`: inštalácia a aktualizácia. Po úprave stačí spustiť znova.
