@@ -1,0 +1,12 @@
+{
+  "name": "stemlab-materialy",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.146.0"
+  }
+}
